@@ -314,7 +314,7 @@ async function getCompleteWorkerProfile(workerIdOrCode, callerUser = null) {
       workingHours: workingHoursDisplay,
       workType
     },
-    location: {
+    locationDetails: {
       currentAddress,
       city,
       pincode,
