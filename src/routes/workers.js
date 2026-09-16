@@ -15,7 +15,7 @@ const { requireWorker } = require('../middleware/rbac');
  */
 router.get('/', async (req, res, next) => {
   try {
-    const { category, societyId, experienceTier, availabilityStatus, isOnline, limit = 20, page = 1 } = req.query;
+    const { category, societyId, experienceTier, availabilityStatus, isOnline, search, limit = 20, page = 1 } = req.query;
     const filter = {};
 
     if (category) filter.primaryServiceCategory = category;
@@ -26,6 +26,18 @@ router.get('/', async (req, res, next) => {
 
     // By default only show verified workers publicly
     filter.kycVerificationStatus = 'VERIFIED';
+
+    if (search && search.trim()) {
+      const searchRegex = { $regex: search.trim(), $options: 'i' };
+      filter.$or = [
+        { fullName: searchRegex },
+        { primarySkill: searchRegex },
+        { primaryServiceCategory: searchRegex },
+        { servicesOffered: searchRegex },
+        { preferredWorkingAreas: searchRegex },
+        { city: searchRegex }
+      ];
+    }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const workers = await Worker.find(filter)
