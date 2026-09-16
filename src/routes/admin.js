@@ -8,6 +8,7 @@ const Booking = require('../models/Booking');
 const Society = require('../models/Society');
 const Region = require('../models/Region');
 const Complaint = require('../models/Complaint');
+const workerProfileService = require('../services/workerProfileService');
 const { authenticateJwt } = require('../middleware/auth');
 const { requireAdmin } = require('../middleware/rbac');
 
@@ -66,7 +67,7 @@ router.get('/analytics', async (req, res, next) => {
 
 /**
  * GET /api/admin/workers
- * Scoped worker list
+ * Scoped worker list with complete profile attributes
  */
 router.get('/workers', async (req, res, next) => {
   try {
@@ -111,15 +112,10 @@ router.get('/workers', async (req, res, next) => {
       .skip(skip)
       .limit(parseInt(limit));
 
-    const workerIds = workers.map(w => w._id);
-    const privates = await WorkerPrivate.find({ workerId: { $in: workerIds } });
-    const privateMap = {};
-    privates.forEach(p => { privateMap[p.workerId.toString()] = p; });
-
-    const combined = workers.map(w => ({
-      ...w.toObject(),
-      privateData: privateMap[w._id.toString()] || null
-    }));
+    // Consolidate profiles using canonical worker profile service
+    const combined = await Promise.all(
+      workers.map((w) => workerProfileService.getCompleteWorkerProfile(w._id, req.user))
+    );
 
     const total = await Worker.countDocuments(filter);
 
@@ -128,6 +124,36 @@ router.get('/workers', async (req, res, next) => {
       data: {
         workers: combined,
         pagination: { total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) }
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/workers/:id
+ * Retrieve full canonical worker dossier for an administrative inspection
+ */
+router.get('/workers/:id', async (req, res, next) => {
+  try {
+    const profile = await workerProfileService.getCompleteWorkerProfile(req.params.id, req.user);
+    if (!profile) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Worker not found' } });
+    }
+
+    // Tenant scope check: only deny if worker has a different society/federation explicitly assigned
+    if (req.user.role === 'SOCIETY_ADMIN' && profile.societyId && profile.societyId.toString() !== req.user.societyId?.toString()) {
+      return res.status(403).json({ success: false, error: { code: 'ACCESS_DENIED', message: 'Worker belongs to a different cooperative society.' } });
+    }
+    if (req.user.role === 'FEDERATION_ADMIN' && profile.federationId && profile.federationId.toString() !== req.user.federationId?.toString()) {
+      return res.status(403).json({ success: false, error: { code: 'ACCESS_DENIED', message: 'Worker belongs to a different federation.' } });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        worker: profile
       }
     });
   } catch (err) {

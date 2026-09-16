@@ -5,6 +5,7 @@ const WorkerPrivate = require('../models/WorkerPrivate');
 const Booking = require('../models/Booking');
 const Review = require('../models/Review');
 const mockAadhaarService = require('../services/mockAadhaarService');
+const workerProfileService = require('../services/workerProfileService');
 const { authenticateJwt } = require('../middleware/auth');
 const { requireWorker } = require('../middleware/rbac');
 
@@ -55,9 +56,7 @@ router.get('/', async (req, res, next) => {
  */
 router.get('/me', authenticateJwt, async (req, res, next) => {
   try {
-    let worker = await Worker.findOne({ userId: req.user._id })
-      .populate('societyId', 'name societyCode')
-      .populate('primaryRegionId', 'name');
+    let worker = await Worker.findOne({ userId: req.user._id });
 
     if (!worker) {
       const mockIdentity = mockAadhaarService.getMockIdentity(req.user.mobileNumber);
@@ -82,14 +81,11 @@ router.get('/me', authenticateJwt, async (req, res, next) => {
       await worker.save();
     }
 
-    const privateData = await WorkerPrivate.findOne({ workerId: worker._id });
+    const completeProfile = await workerProfileService.getCompleteWorkerProfile(worker._id);
 
     res.json({
       success: true,
-      data: {
-        ...worker.toObject(),
-        privateData: privateData || null
-      }
+      data: completeProfile
     });
   } catch (err) {
     next(err);
@@ -100,26 +96,14 @@ router.get('/me', authenticateJwt, async (req, res, next) => {
  * PUT /api/workers/me
  * Worker update own profile details
  */
-router.put('/me', authenticateJwt, requireWorker, async (req, res, next) => {
+router.put('/me', authenticateJwt, async (req, res, next) => {
   try {
-    const { fullName, avatarUrl, gender, languagesSpoken, primaryServiceCategory, skills, societyId } = req.body;
-    const updates = {};
+    const updatedProfile = await workerProfileService.updateWorkerProfile(req.user._id, req.body);
+    if (!updatedProfile) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Worker not found' } });
+    }
 
-    if (fullName !== undefined) updates.fullName = fullName;
-    if (avatarUrl !== undefined) updates.avatarUrl = avatarUrl;
-    if (gender !== undefined) updates.gender = gender;
-    if (languagesSpoken !== undefined) updates.languagesSpoken = languagesSpoken;
-    if (primaryServiceCategory !== undefined) updates.primaryServiceCategory = primaryServiceCategory;
-    if (skills !== undefined) updates.skills = skills;
-    if (societyId !== undefined) updates.societyId = societyId;
-
-    const worker = await Worker.findOneAndUpdate(
-      { userId: req.user._id },
-      { $set: updates },
-      { new: true, runValidators: true }
-    );
-
-    res.json({ success: true, data: worker });
+    res.json({ success: true, data: updatedProfile });
   } catch (err) {
     next(err);
   }
