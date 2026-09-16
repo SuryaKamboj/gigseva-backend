@@ -25,6 +25,16 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
 
+// Root Welcome / Ping
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'GigSevak Cooperative Platform API is live and operational.',
+    version: '1.0.0',
+    healthCheck: '/api/health'
+  });
+});
+
 // Health Check
 app.get('/api/health', (req, res) => {
   const isConnected = mongoose.connection.readyState === 1;
