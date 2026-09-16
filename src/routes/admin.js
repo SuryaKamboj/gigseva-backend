@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Worker = require('../models/Worker');
 const WorkerPrivate = require('../models/WorkerPrivate');
 const User = require('../models/User');
@@ -145,7 +146,13 @@ router.put('/workers/:id/kyc', async (req, res, next) => {
       return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'status must be VERIFIED or REJECTED' } });
     }
 
-    const worker = await Worker.findById(req.params.id);
+    let worker = null;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      worker = await Worker.findById(req.params.id);
+    }
+    if (!worker) {
+      worker = await Worker.findOne({ workerCode: req.params.id });
+    }
     if (!worker) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Worker not found' } });
 
     // Scope check: only deny if worker has a different society/federation explicitly assigned
