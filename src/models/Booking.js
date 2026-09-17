@@ -47,7 +47,7 @@ const BookingSchema = new Schema({
   isTeamLead: { type: Boolean, default: false },
   status: {
     type: String,
-    enum: ['PENDING', 'REQUESTED', 'ALLOCATED', 'ACCEPTED', 'IN_TRANSIT', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'],
+    enum: ['PENDING', 'REQUESTED', 'ALLOCATED', 'ACCEPTED', 'IN_TRANSIT', 'ARRIVED', 'IN_PROGRESS', 'COMPLETION_PENDING', 'COMPLETED', 'CANCELLED'],
     default: 'PENDING',
     index: true
   },
@@ -69,7 +69,14 @@ const BookingSchema = new Schema({
     otpHash: String,
     failedAttempts: { type: Number, default: 0 },
     lockedUntil: Date,
-    verifiedAt: Date
+    verifiedAt: Date,
+    // Completion PIN — generated when worker clicks "Job Completed"
+    completionPin: String,
+    completionOtpHash: String,
+    completionOtpGeneratedAt: Date,
+    completionFailedAttempts: { type: Number, default: 0 },
+    completionLockedUntil: Date,
+    completionVerifiedAt: Date
   },
   materialRequests: [MaterialRequestSchema],
   pricing: { type: PricingSchema, default: () => ({}) },

@@ -12,6 +12,8 @@ const {
   canTransition,
   getOtpForBooking,
   verifyBookingOtp,
+  generateCompletionOtp,
+  verifyCompletionOtp,
   generateBookingCode,
   generateMaterialRequestId
 } = require('../services/booking');
@@ -226,7 +228,7 @@ router.get('/', authenticateJwt, async (req, res, next) => {
       .populate('workerId', 'fullName workerCode avatarUrl experienceTier metrics')
       .populate('serviceId', 'name category defaultDurationMinutes')
       .populate('servicingSocietyId', 'name societyCode')
-      .select('-security.otpHash') // Never expose hash in list queries
+      .select('-security.otpHash -security.completionOtpHash -security.completionPin') // Never expose hashes or raw PIN in list queries
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -292,7 +294,9 @@ router.get('/:id', authenticateJwt, async (req, res, next) => {
     }
 
     const bookingObj = booking.toObject();
-    delete bookingObj.security?.otpHash; // Never expose hash
+    delete bookingObj.security?.otpHash;           // Never expose start-job OTP hash
+    delete bookingObj.security?.completionOtpHash; // Never expose completion hash
+    delete bookingObj.security?.completionPin;     // Never leak plaintext completion PIN in raw bookingObj
 
     // CRITICAL OTP RULE:
     // Start OTP is revealed ONLY to the customer owner, and ONLY when the worker has reached ARRIVED state.
@@ -301,11 +305,23 @@ router.get('/:id', authenticateJwt, async (req, res, next) => {
       startOtp = getOtpForBooking(booking._id, booking.userId._id || booking.userId).pin;
     }
 
+    // COMPLETION PIN RULE:
+    // The 4-digit completion PIN is revealed ONLY to the customer owner (or admin),
+    // and ONLY when the booking is in COMPLETION_PENDING state.
+    // The worker must obtain this PIN verbally from the customer to complete the job.
+    let completionPin = null;
+    const isCustomerOwner = req.user.role === 'CUSTOMER' && bookingUserId === req.user._id.toString();
+    const isAdmin = ['PLATFORM_SUPER_ADMIN', 'SYSTEM_ADMIN'].includes(req.user.role);
+    if ((isCustomerOwner || isAdmin) && booking.status === 'COMPLETION_PENDING') {
+      completionPin = booking.security?.completionPin ?? null;
+    }
+
     res.json({
       success: true,
       data: {
         ...bookingObj,
-        startOtp // null if not ARRIVED or not customer
+        startOtp,          // null unless ARRIVED + customer
+        completionPin      // null unless COMPLETION_PENDING + customer
       }
     });
   } catch (err) {
@@ -606,7 +622,9 @@ router.post('/:id/material-request/:requestId/resolve', authenticateJwt, async (
 
 /**
  * POST /api/bookings/:id/complete
- * Mark job completed (from IN_PROGRESS only, with no pending material claims)
+ * Worker signals job is done: generates 4-digit completion PIN, stores hash in MongoDB,
+ * sets status to COMPLETION_PENDING. The customer must then read the PIN from the
+ * tracking page and dictate it to the worker. The worker then calls /verify-completion.
  */
 router.post('/:id/complete', authenticateJwt, async (req, res, next) => {
   try {
@@ -614,8 +632,9 @@ router.post('/:id/complete', authenticateJwt, async (req, res, next) => {
     const booking = await findBookingByIdOrCode(req.params.id);
     if (!booking) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Booking not found' } });
 
-    if (!worker || String(booking.workerId) !== String(worker._id)) {
-      return res.status(403).json({ success: false, error: { code: 'ACCESS_DENIED', message: 'Only the assigned worker can complete this job.' } });
+    const bookingWorkerId = booking.workerId?._id ? String(booking.workerId._id) : String(booking.workerId);
+    if (!worker || bookingWorkerId !== String(worker._id)) {
+      return res.status(403).json({ success: false, error: { code: 'ACCESS_DENIED', message: 'Only the assigned worker can initiate job completion.' } });
     }
 
     if (booking.status !== 'IN_PROGRESS') {
@@ -629,13 +648,101 @@ router.post('/:id/complete', authenticateJwt, async (req, res, next) => {
         success: false,
         error: {
           code: 'PENDING_MATERIAL_APPROVAL',
-          message: 'Cannot complete booking while material requests are pending customer approval. Please have the customer approve or reject pending claims.'
+          message: 'Cannot complete booking while material requests are pending customer approval.'
         }
       });
     }
 
+    // Generate cryptographically random 4-digit completion PIN
+    const { pin, hash } = generateCompletionOtp(booking._id);
+
+    // Persist: store hash (not plain PIN) + store plain PIN for customer display
+    // We store the plain PIN only in security.completionPin (server-side only field).
+    // This is acceptable since it is protected by auth middleware and only exposed
+    // to the booking owner via GET /bookings/:id when status === COMPLETION_PENDING.
+    if (!booking.security) booking.security = {};
+    booking.security.completionOtpHash = hash;
+    booking.security.completionPin = pin;       // readable by customer via GET /bookings/:id
+    booking.security.completionOtpGeneratedAt = new Date();
+    booking.security.completionFailedAttempts = 0;
+    booking.security.completionLockedUntil = null;
+    booking.status = 'COMPLETION_PENDING';
+    booking.markModified('security');
+    await booking.save();
+
+    res.json({
+      success: true,
+      data: {
+        bookingId: booking.bookingCode || booking._id,
+        status: booking.status,
+        message: 'Completion PIN generated. Ask the customer to read the PIN from their tracking page.'
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/bookings/:id/verify-completion
+ * Worker submits the 4-digit PIN that the customer read from the tracking page.
+ * Backend verifies against stored hash → sets status to COMPLETED.
+ */
+router.post('/:id/verify-completion', authenticateJwt, async (req, res, next) => {
+  try {
+    const { pin } = req.body;
+    if (!pin) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_PIN', message: '4-digit completion PIN is required.' } });
+    }
+
+    const worker = await Worker.findOne({ userId: req.user._id });
+    const booking = await findBookingByIdOrCode(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Booking not found' } });
+
+    const bookingWorkerId = booking.workerId?._id ? String(booking.workerId._id) : String(booking.workerId);
+    if (!worker || bookingWorkerId !== String(worker._id)) {
+      return res.status(403).json({ success: false, error: { code: 'ACCESS_DENIED', message: 'Only the assigned worker can verify completion.' } });
+    }
+
+    if (booking.status !== 'COMPLETION_PENDING') {
+      return res.status(409).json({ success: false, error: { code: 'INVALID_STATE_TRANSITION', message: `Cannot verify completion in '${booking.status}' state. Must be 'COMPLETION_PENDING'.` } });
+    }
+
+    // Brute-force rate limiting on completion PIN
+    if (booking.security?.completionLockedUntil && new Date() < new Date(booking.security.completionLockedUntil)) {
+      const waitMins = Math.ceil((new Date(booking.security.completionLockedUntil) - new Date()) / 60000);
+      return res.status(429).json({ success: false, error: { code: 'COMPLETION_PIN_LOCKED', message: `Too many failed attempts. Locked for ${waitMins} minute(s).` } });
+    }
+
+    const isValid = verifyCompletionOtp(pin, booking.security?.completionOtpHash, booking._id);
+    if (!isValid) {
+      if (!booking.security) booking.security = {};
+      booking.security.completionFailedAttempts = (booking.security.completionFailedAttempts || 0) + 1;
+      if (booking.security.completionFailedAttempts >= 5) {
+        booking.security.completionLockedUntil = new Date(Date.now() + 10 * 60 * 1000); // 10 min lock
+      }
+      booking.markModified('security');
+      await booking.save();
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_COMPLETION_PIN',
+          message: 'Incorrect PIN. Ask the customer to read the 4-digit code from their tracking page.',
+          attemptsRemaining: Math.max(0, 5 - booking.security.completionFailedAttempts)
+        }
+      });
+    }
+
+    // PIN verified — finalize the booking
+    booking.security.completionVerifiedAt = new Date();
+    booking.security.completionFailedAttempts = 0;
+    booking.security.completionLockedUntil = null;
+    // Clear the plaintext PIN now that it has been consumed
+    booking.security.completionPin = undefined;
+    booking.security.completionOtpHash = undefined;
     booking.status = 'COMPLETED';
     booking.completedAt = new Date();
+    booking.markModified('security');
     await booking.save();
 
     // Free worker & update metrics
