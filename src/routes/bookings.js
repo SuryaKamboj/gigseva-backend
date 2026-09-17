@@ -17,7 +17,9 @@ const {
 } = require('../services/booking');
 
 const findBookingByIdOrCode = (id) => {
-  const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { bookingCode: id };
+  const query = mongoose.Types.ObjectId.isValid(id)
+    ? { $or: [{ _id: id }, { bookingCode: id }, { bookingId: id }] }
+    : { $or: [{ bookingCode: id }, { bookingId: id }] };
   return Booking.findOne(query);
 };
 
@@ -121,7 +123,7 @@ router.post('/', authenticateJwt, async (req, res, next) => {
     const tempBookingId = new mongoose.Types.ObjectId();
     const { hash } = getOtpForBooking(tempBookingId, req.user._id);
 
-    const status = assignedWorker ? 'ALLOCATED' : 'REQUESTED';
+    const status = 'PENDING';
 
     const dispatchLog = [];
     if (assignedWorker) {
@@ -135,6 +137,7 @@ router.post('/', authenticateJwt, async (req, res, next) => {
     const booking = new Booking({
       _id: tempBookingId,
       bookingCode,
+      bookingId: bookingCode,
       bookingType,
       userId: req.user._id, // Authoritative identity from JWT
       workerId: assignedWorker ? assignedWorker._id : null,
@@ -207,9 +210,10 @@ router.get('/', authenticateJwt, async (req, res, next) => {
       if (!worker) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Worker profile not found' } });
       filter.$or = [
         { workerId: worker._id },
-        { 'dispatchLog.workerId': worker._id, status: 'REQUESTED' },
-        { status: 'REQUESTED', servicingSocietyId: worker.societyId }
+        { 'dispatchLog.workerId': worker._id, status: { $in: ['PENDING', 'REQUESTED', 'ALLOCATED'] } },
+        { status: { $in: ['PENDING', 'REQUESTED'] }, workerId: null, servicingSocietyId: worker.societyId }
       ];
+      filter.declinedWorkerIds = { $ne: worker._id };
     } else if (req.user.role === 'SOCIETY_ADMIN') {
       filter.servicingSocietyId = req.user.societyId;
     } else if (req.user.role === 'FEDERATION_ADMIN') {
@@ -321,8 +325,13 @@ router.post('/:id/accept', authenticateJwt, async (req, res, next) => {
     const booking = await findBookingByIdOrCode(req.params.id);
     if (!booking) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Booking not found' } });
 
-    if (!['REQUESTED', 'ALLOCATED'].includes(booking.status)) {
+    if (!['PENDING', 'REQUESTED', 'ALLOCATED'].includes(booking.status)) {
       return res.status(409).json({ success: false, error: { code: 'INVALID_STATUS', message: `Cannot accept booking in ${booking.status} state` } });
+    }
+
+    // Security check: If booking was created for another specific worker, deny access
+    if (booking.workerId && String(booking.workerId) !== String(worker._id)) {
+      return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'This booking is assigned to another worker' } });
     }
 
     booking.workerId = worker._id;
@@ -355,12 +364,26 @@ router.post('/:id/decline', authenticateJwt, async (req, res, next) => {
     const booking = await findBookingByIdOrCode(req.params.id);
     if (!booking) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Booking not found' } });
 
+    // Ensure worker was assigned or offered this booking
+    const isAssigned = booking.workerId && String(booking.workerId) === String(worker._id);
+    const isOffered = booking.dispatchLog?.some(d => String(d.workerId) === String(worker._id));
+    if (!isAssigned && !isOffered) {
+      return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'You are not assigned to this booking' } });
+    }
+
     booking.dispatchLog.push({
       workerId: worker._id,
       action: 'DECLINED',
       reason: req.body.reason || 'Worker declined',
       timestamp: new Date()
     });
+
+    if (!booking.declinedWorkerIds) {
+      booking.declinedWorkerIds = [];
+    }
+    if (!booking.declinedWorkerIds.some(id => String(id) === String(worker._id))) {
+      booking.declinedWorkerIds.push(worker._id);
+    }
 
     if (String(booking.workerId) === String(worker._id)) {
       booking.workerId = null;

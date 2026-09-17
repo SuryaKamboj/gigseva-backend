@@ -1,4 +1,4 @@
-﻿const mongoose = require('mongoose');
+const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 const PricingSchema = new Schema({
@@ -33,6 +33,7 @@ const DispatchLogSchema = new Schema({
 
 const BookingSchema = new Schema({
   bookingCode: { type: String, required: true, unique: true, index: true },
+  bookingId: { type: String, index: true },
   bookingType: { type: String, enum: ['STANDARD', 'EMERGENCY_SOS', 'COMMUNITY_POOL', 'VOICE_BOOKING'], default: 'STANDARD' },
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   workerId: { type: Schema.Types.ObjectId, ref: 'Worker', default: null },
@@ -46,8 +47,8 @@ const BookingSchema = new Schema({
   isTeamLead: { type: Boolean, default: false },
   status: {
     type: String,
-    enum: ['REQUESTED', 'ALLOCATED', 'ACCEPTED', 'IN_TRANSIT', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'],
-    default: 'REQUESTED',
+    enum: ['PENDING', 'REQUESTED', 'ALLOCATED', 'ACCEPTED', 'IN_TRANSIT', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'],
+    default: 'PENDING',
     index: true
   },
   reallocationCount: { type: Number, default: 0 },
@@ -82,6 +83,16 @@ const BookingSchema = new Schema({
   notes: String
 }, { timestamps: true });
 
+BookingSchema.pre('save', function(next) {
+  if (!this.bookingId && this.bookingCode) {
+    this.bookingId = this.bookingCode;
+  }
+  next();
+});
+
+BookingSchema.set('toJSON', { virtuals: true });
+BookingSchema.set('toObject', { virtuals: true });
+
 BookingSchema.index({ userId: 1, createdAt: -1 });
 BookingSchema.index({ workerId: 1, status: 1 });
 BookingSchema.index({ servicingSocietyId: 1, status: 1 });
@@ -89,3 +100,4 @@ BookingSchema.index({ teamId: 1 }, { sparse: true });
 BookingSchema.index({ status: 1, bookingType: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Booking', BookingSchema);
+

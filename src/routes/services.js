@@ -35,7 +35,15 @@ router.get('/', async (req, res, next) => {
  */
 router.get('/:id', async (req, res, next) => {
   try {
-    const service = await Service.findById(req.params.id);
+    const query = require('mongoose').Types.ObjectId.isValid(req.params.id)
+      ? { _id: req.params.id }
+      : {
+          $or: [
+            { serviceCode: req.params.id },
+            { category: String(req.params.id).toUpperCase() }
+          ]
+        };
+    const service = await Service.findOne(query);
     if (!service) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Service not found' } });
     }

@@ -31,9 +31,9 @@ async function runE2ETest() {
   // 2. Authenticate Customer (User Frontend)
   console.log('\nSTEP 2: Customer Authentication (user-frontend)...');
   const userAuth = await apiRequest('/auth/verify-otp', 'POST', {
-    mobileNumber: '+919876543210',
+    mobileNumber: '+919812345678',
     role: 'CUSTOMER',
-    fullName: 'Priya Narang'
+    fullName: 'Test Customer'
   });
   if (!userAuth.ok || !userAuth.data?.data?.accessToken) {
     throw new Error(`Customer auth failed: ${JSON.stringify(userAuth)}`);

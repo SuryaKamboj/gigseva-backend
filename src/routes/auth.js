@@ -90,13 +90,15 @@ router.post('/verify-otp', async (req, res, next) => {
       });
       await user.save();
     } else if (isWorkerRole && user.role !== 'WORKER') {
-      user.role = 'WORKER';
+      // Do NOT permanently overwrite the user's stored role.
+      // A user can act as both CUSTOMER and WORKER from different frontends.
+      // The JWT will carry the session-specific role.
       // If user had generic placeholder name, assign mock Aadhaar name
       if (!user.fullName || user.fullName === 'New Customer' || user.fullName === 'Worker Partner') {
         const mockIdentity = mockAadhaarService.getMockIdentity(phone);
         user.fullName = mockIdentity.fullName;
+        await user.save();
       }
-      await user.save();
     }
 
     // Lookup worker profile if worker, or create if missing
@@ -134,9 +136,13 @@ router.post('/verify-otp', async (req, res, next) => {
       }
     }
 
+    // Use the REQUESTED session role for the JWT, not the stored DB role.
+    // This allows a user to act as CUSTOMER from user-frontend and WORKER from worker-frontend.
+    const sessionRole = isWorkerRole ? 'WORKER' : (role ? role.toUpperCase() : user.role);
+
     const payload = {
       userId: user._id.toString(),
-      role: user.role,
+      role: sessionRole,
       societyId: user.societyId ? user.societyId.toString() : null,
       federationId: user.federationId ? user.federationId.toString() : null,
       workerId: workerDoc ? workerDoc._id.toString() : null
@@ -154,7 +160,7 @@ router.post('/verify-otp', async (req, res, next) => {
           userId: user._id,
           fullName: workerDoc ? workerDoc.fullName : user.fullName,
           mobileNumber: user.mobileNumber,
-          role: user.role,
+          role: sessionRole,
           workerId: workerDoc ? workerDoc._id : null,
           workerCode: workerDoc ? workerDoc.workerCode : null,
           kycVerificationStatus: workerDoc ? workerDoc.kycVerificationStatus : null,

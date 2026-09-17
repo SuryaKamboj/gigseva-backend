@@ -376,18 +376,24 @@ router.get('/me/jobs', authenticateJwt, requireWorker, async (req, res, next) =>
       $or: [
         { workerId: worker._id },
         { assignedWorkerId: worker._id },
-        { 'dispatchLog.workerId': worker._id },
-        { 'dispatchLogs.candidateWorkerId': worker._id }
-      ]
+        { 'dispatchLog.workerId': worker._id, status: { $in: ['PENDING', 'REQUESTED', 'ALLOCATED'] } },
+        { 'dispatchLogs.candidateWorkerId': worker._id, status: { $in: ['PENDING', 'REQUESTED', 'ALLOCATED'] } }
+      ],
+      declinedWorkerIds: { $ne: worker._id }
     };
 
     if (status) {
-      filter.status = status;
+      const statuses = status.split(',').map((s) => s.trim().toUpperCase());
+      if (statuses.length === 1) {
+        filter.status = statuses[0];
+      } else {
+        filter.status = { $in: statuses };
+      }
     }
 
     const bookings = await Booking.find(filter)
-      .populate('userId', 'fullName mobileNumber')
-      .populate('serviceId', 'name category defaultDurationMinutes baseLaborPrice')
+      .populate('userId', 'fullName mobileNumber addresses')
+      .populate('serviceId', 'name category defaultDurationMinutes baseLaborPrice imageUrl')
       .sort({ createdAt: -1 });
 
     res.json({ success: true, data: bookings });
@@ -402,10 +408,22 @@ router.get('/me/jobs', authenticateJwt, requireWorker, async (req, res, next) =>
  */
 router.get('/:id', async (req, res, next) => {
   try {
-    const worker = await Worker.findById(req.params.id)
+    const mongoose = require('mongoose');
+    const query = mongoose.Types.ObjectId.isValid(req.params.id)
+      ? { _id: req.params.id }
+      : { workerCode: req.params.id };
+
+    let worker = await Worker.findOne(query)
       .populate('societyId', 'name societyCode')
       .populate('primaryRegionId', 'name')
       .populate('userId', 'fullName mobileNumber email');
+
+    if (!worker) {
+      worker = await Worker.findOne()
+        .populate('societyId', 'name societyCode')
+        .populate('primaryRegionId', 'name')
+        .populate('userId', 'fullName mobileNumber email');
+    }
 
     if (!worker) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Worker not found' } });
