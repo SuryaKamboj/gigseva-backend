@@ -74,6 +74,16 @@ const WorkerSchema = new Schema({
     title: String,
     uploadedAt: { type: Date, default: Date.now }
   }],
+  workGallery: [{
+    id: String,
+    title: String,
+    jobType: String,
+    date: String,
+    rating: Number,
+    location: String,
+    beforeImg: String,
+    afterImg: String
+  }],
   insurance: {
     status: { type: String, default: 'Not Applied' },
     planName: String,

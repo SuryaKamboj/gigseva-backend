@@ -251,6 +251,7 @@ async function getCompleteWorkerProfile(workerIdOrCode, callerUser = null) {
     certifications,
     trainingCompleted,
     portfolio: combinedPortfolio,
+    workGallery: worker.workGallery || [],
     currentAddress,
     city,
     pincode,

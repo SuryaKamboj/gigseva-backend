@@ -265,7 +265,19 @@ async function seed(standalone = true) {
         acceptanceRate: 98,
         cancellationRate: 1,
         trustScore: 96
-      }
+      },
+      workGallery: [
+        {
+          id: 'wg-1',
+          title: 'Burnt Switchboard Overhaul',
+          jobType: 'Emergency MCB & Wiring Repair',
+          date: '14 Aug 2026',
+          rating: 5.0,
+          location: 'Lajpat Nagar II, New Delhi',
+          beforeImg: '/uploads/proof-of-work/before-switchboard-overhaul.png',
+          afterImg: '/uploads/proof-of-work/after-switchboard-overhaul.png'
+        }
+      ]
     });
 
     await WorkerPrivate.create({
